@@ -14,8 +14,9 @@
    [ring.util.response :refer [resource-response] :as response]
    [ring.util.mime-type :as mime]
    [ring.middleware.cors :as cors]
-   [org.httpkit.server :refer [run-server with-channel on-close on-receive send! open?]]
-   
+   [immutant.web :as web]
+   [immutant.web.async :as web.async]
+
    [com.stuartsierra.component :as component]))
 
 (defprotocol ChannelServer
@@ -88,50 +89,50 @@
 ;; this sets up the websocket connection
 ;; TODO look more at this
 (defn setup-file-change-sender [{:keys [file-change-atom compile-wait-time connection-count] :as server-state}
-                                {:keys [desired-build-id] :as params}
-                                wschannel]
+                                {:keys [desired-build-id] :as params}]
   (let [watch-key (keyword (gensym "message-watch-"))]
-    (update-connection-count connection-count desired-build-id inc)
-    (add-watch
-     file-change-atom
-     watch-key
-     (fn [_ _ o n]
-       (let [msg (first n)]
-         (when (and msg
-                    (or
-                     ;; broadcast all css messages
-                     (= ::broadcast (:build-id msg))
-                     ;; if its nil you get it all
-                     (nil? desired-build-id)
-                     ;; otherwise you only get messages for your build id
-                     (= desired-build-id (:build-id msg))))
-           (<!! (timeout compile-wait-time))
-           (when (open? wschannel)
-             (send! wschannel (prn-str msg)))))))
-    
-    (on-close wschannel
-              (fn [status]
-                (update-connection-count connection-count desired-build-id dec)
-                (remove-watch file-change-atom watch-key)
-                #_(println "Figwheel: client disconnected " status)))
-    
-    (on-receive wschannel
-                (fn [data] (#'handle-client-msg server-state data
-                            )))
+    { :on-open
+      (fn [wschannel]
+        (update-connection-count connection-count desired-build-id inc)
+        (add-watch
+         file-change-atom
+         watch-key
+         (fn [_ _ o n]
+           (let [msg (first n)]
+             (when (and msg
+                        (or
+                         ;; broadcast all css messages
+                         (= ::broadcast (:build-id msg))
+                         ;; if its nil you get it all
+                         (nil? desired-build-id)
+                         ;; otherwise you only get messages for your build id
+                         (= desired-build-id (:build-id msg))))
+               (<!! (timeout compile-wait-time))
+               (when (web.async/open? wschannel)
+                 (web.async/send! wschannel (prn-str msg)))))))
+        ;; Keep alive!!
+        ;;
+        (go-loop []
+          (<! (timeout 5000))
+          (when (web.async/open? wschannel)
+            (web.async/send! wschannel (prn-str  {:msg-name :ping
+                                                  :project-id (:unique-id server-state)}))
+            (recur))))
 
-    ;; Keep alive!!
-    ;; 
-    (go-loop []
-      (<! (timeout 5000))
-      (when (open? wschannel)
-        (send! wschannel (prn-str  {:msg-name :ping
-                                    :project-id (:unique-id server-state)}))
-        (recur)))))
+      :on-close
+      (fn [wschannel {:keys [code reason]}]
+        (update-connection-count connection-count desired-build-id dec)
+        (remove-watch file-change-atom watch-key)
+        #_(println "Figwheel: client disconnected " status))
+
+      :on-message 
+      (fn [wschannel data]
+        (#'handle-client-msg server-state data)) }))
 
 (defn reload-handler [server-state]
   (fn [request]
-    (with-channel request channel
-      (setup-file-change-sender server-state (:params request) channel))))
+    (web.async/as-channel request
+      (setup-file-change-sender server-state (:params request)))))
 
 (defn log-output-to-figwheel-server-log [handler log-writer]
   (fn [request]
@@ -223,10 +224,8 @@
       :access-control-allow-origin #".*"
       :access-control-allow-methods [:head :options :get :put :post :delete :patch])
      (log-output-to-figwheel-server-log log-writer)
-     (run-server (let [config {:port server-port :worker-name-prefix "figwh-httpkit-"}]
-                   (if server-ip
-                     (assoc config :ip server-ip)
-                     config))))
+     (web/run (cond-> {:port server-port}
+                server-ip (assoc :host server-ip))))
     (catch java.net.BindException e
       (throw (ex-info (str "Port " server-port " is already being used. \n"
                            "Are you running another Figwheel instance? \n"
@@ -296,7 +295,7 @@
      (assoc state :http-server (server state)))))
 
 (defn stop-server [{:keys [http-server]}]
-  (http-server))
+  (web/stop http-server))
 
 (defn prep-message [{:keys [unique-id] :as this} channel-id msg-data callback]
   (-> msg-data
