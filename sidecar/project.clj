@@ -1,4 +1,4 @@
-(defproject figwheel-sidecar "0.5.14"
+(defproject tonsky/figwheel-sidecar-immutant "0.5.14"
   :description "ClojureScript Autobuilder/Server which pushes changed files to the browser."
   :url "https://github.com/bhauman/lein-figwheel"
   :license {:name "Eclipse Public License - v 1.0"
@@ -15,7 +15,7 @@
    [com.stuartsierra/component "0.3.2"]
    [suspendable "0.1.1"
     :exclusions [org.clojure/clojure com.stuartsierra/component]]
-   [http-kit "2.2.0"]
+   [org.immutant/web "2.1.9"]
    [ring-cors "0.1.11"
     :exclusions [ring/ring-core org.clojure/clojure]]
    [ring/ring-core "1.6.1"
